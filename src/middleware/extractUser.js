@@ -1,4 +1,5 @@
 const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY;
+const { resolveUserId, resolveTenantHeaders } = require("../lib/resolveUserContext");
 
 const extractUser = (req, res, next) => {
   const serviceKey = req.headers["x-service-key"];
@@ -10,15 +11,20 @@ const extractUser = (req, res, next) => {
     return next();
   }
 
-  const headerUserId = req.headers["x-user-id"];
-  if (!headerUserId) {
+  const userId = resolveUserId(req);
+  if (!userId || Number.isNaN(userId)) {
     return res.status(401).json({
       success: false,
       error: { code: "UNAUTHORIZED", message: "Missing user context" },
     });
   }
 
-  req.userId = parseInt(headerUserId, 10);
+  req.userId = userId;
+  const tenant = resolveTenantHeaders(req);
+  req.entityCode = tenant.entityCode;
+  req.companyCode = tenant.companyCode;
+  req.branchCode = tenant.branchCode;
+  req.appCode = tenant.appCode;
   next();
 };
 

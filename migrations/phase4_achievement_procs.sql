@@ -1,0 +1,174 @@
+--==============================================================
+-- PHASE 4 - ACHIEVEMENT STORED PROCEDURES
+-- Apply after migrations/phase4_achievements.sql (tables + seed).
+--==============================================================
+USE [DISCIPLINE_RULE_ENGINE]
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[USP_AWARD_ACHIEVEMENTS]
+(
+    @USERID INT,
+    @TRIGGER NVARCHAR(30) = N'EVALUATION',
+    @CONTEXTJSON NVARCHAR(MAX) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @NewlyAwardedIds TABLE (ACHIEVEMENTID INT NOT NULL);
+    DECLARE @Candidates TABLE (
+        ACHIEVEMENTID INT NOT NULL,
+        CODE NVARCHAR(50) NOT NULL,
+        CONTEXTJSON NVARCHAR(MAX) NULL
+    );
+
+    DECLARE @Now DATETIME2(7) = SYSUTCDATETIME();
+    DECLARE @CurrentStreak INT = 0;
+    DECLARE @SuccessRate DECIMAL(5,2) = 0;
+    DECLARE @TotalDays INT = 0;
+    DECLARE @DurationDays INT = NULL;
+    DECLARE @AwardCode NVARCHAR(50) = NULL;
+
+    SELECT
+        @CurrentStreak = ISNULL(CURRENTSTREAK, 0),
+        @SuccessRate = ISNULL(SUCCESSRATE, 0),
+        @TotalDays = ISNULL(TOTALDAYS, 0)
+    FROM USERSTREAK
+    WHERE USERID = @USERID;
+
+    IF @TRIGGER = N'EVALUATION'
+    BEGIN
+        INSERT INTO @Candidates (ACHIEVEMENTID, CODE, CONTEXTJSON)
+        SELECT AM.ACHIEVEMENTID, AM.CODE,
+               N'{"streak":' + CAST(@CurrentStreak AS NVARCHAR(10)) + N'}'
+        FROM ACHIEVEMENT_MASTER AM
+        WHERE AM.ISACTIVE = 1
+          AND AM.CATEGORY = N'STREAK'
+          AND (
+                (AM.CODE = N'STREAK_3' AND @CurrentStreak >= 3) OR
+                (AM.CODE = N'STREAK_7' AND @CurrentStreak >= 7) OR
+                (AM.CODE = N'STREAK_14' AND @CurrentStreak >= 14) OR
+                (AM.CODE = N'STREAK_30' AND @CurrentStreak >= 30) OR
+                (AM.CODE = N'STREAK_50' AND @CurrentStreak >= 50) OR
+                (AM.CODE = N'STREAK_100' AND @CurrentStreak >= 100)
+              );
+
+        IF @SuccessRate >= 80 AND @TotalDays >= 7
+        BEGIN
+            INSERT INTO @Candidates (ACHIEVEMENTID, CODE, CONTEXTJSON)
+            SELECT AM.ACHIEVEMENTID, AM.CODE, N'{"passRate":' + CAST(@SuccessRate AS NVARCHAR(20)) + N'}'
+            FROM ACHIEVEMENT_MASTER AM
+            WHERE AM.CODE = N'PASS_RATE_80' AND AM.ISACTIVE = 1;
+        END
+
+        IF (
+            SELECT COUNT(*)
+            FROM (
+                SELECT TOP 7 RESULT
+                FROM DAYEVALUATIONAUDIT
+                WHERE USERID = @USERID
+                ORDER BY DAYDATE DESC
+            ) X
+            WHERE X.RESULT = N'PASS'
+        ) = 7
+        BEGIN
+            INSERT INTO @Candidates (ACHIEVEMENTID, CODE, CONTEXTJSON)
+            SELECT AM.ACHIEVEMENTID, AM.CODE, N'{"perfectDays":7}'
+            FROM ACHIEVEMENT_MASTER AM
+            WHERE AM.CODE = N'PERFECT_WEEK' AND AM.ISACTIVE = 1;
+        END
+
+        IF EXISTS (
+            SELECT 1
+            FROM MODECHANGEHISTORY
+            WHERE USERID = @USERID
+              AND NEWMODE = N'STANDARD'
+              AND CHANGEREASON = N'RECOVERY'
+              AND CHANGEDAT >= DATEADD(DAY, -2, @Now)
+        )
+        BEGIN
+            INSERT INTO @Candidates (ACHIEVEMENTID, CODE, CONTEXTJSON)
+            SELECT AM.ACHIEVEMENTID, AM.CODE, N'{"mode":"STANDARD"}'
+            FROM ACHIEVEMENT_MASTER AM
+            WHERE AM.CODE = N'RECOVERY_COMPLETE' AND AM.ISACTIVE = 1;
+        END
+    END
+    ELSE IF @TRIGGER = N'CHALLENGE_COMPLETE'
+    BEGIN
+        SET @DurationDays = TRY_CAST(JSON_VALUE(@CONTEXTJSON, '$.durationDays') AS INT);
+        SET @AwardCode = CASE @DurationDays
+            WHEN 14 THEN N'CHALLENGE_STARTER'
+            WHEN 21 THEN N'CHALLENGE_BUILDER'
+            WHEN 30 THEN N'CHALLENGE_MOMENTUM'
+            WHEN 45 THEN N'CHALLENGE_DISCIPLINE'
+            WHEN 60 THEN N'CHALLENGE_IRON'
+            WHEN 90 THEN N'CHALLENGE_MASTER'
+            WHEN 180 THEN N'CHALLENGE_ELITE'
+            WHEN 365 THEN N'CHALLENGE_LEGEND'
+            ELSE NULL
+        END;
+
+        IF @AwardCode IS NOT NULL
+        BEGIN
+            INSERT INTO @Candidates (ACHIEVEMENTID, CODE, CONTEXTJSON)
+            SELECT AM.ACHIEVEMENTID, AM.CODE, @CONTEXTJSON
+            FROM ACHIEVEMENT_MASTER AM
+            WHERE AM.CODE = @AwardCode AND AM.ISACTIVE = 1;
+        END
+    END
+
+    INSERT INTO USER_ACHIEVEMENT (USERID, ACHIEVEMENTID, AWARDEDAT, CONTEXTJSON)
+    OUTPUT INSERTED.ACHIEVEMENTID INTO @NewlyAwardedIds (ACHIEVEMENTID)
+    SELECT DISTINCT @USERID, C.ACHIEVEMENTID, @Now, C.CONTEXTJSON
+    FROM @Candidates C
+    WHERE NOT EXISTS (
+        SELECT 1 FROM USER_ACHIEVEMENT UA
+        WHERE UA.USERID = @USERID AND UA.ACHIEVEMENTID = C.ACHIEVEMENTID
+    );
+
+    SELECT 0 AS ErrorCode, N'SUCCESS' AS Status;
+
+    SELECT
+        AM.ACHIEVEMENTID,
+        AM.CODE,
+        AM.NAME,
+        AM.TIER,
+        AM.CATEGORY,
+        AM.ICON,
+        AM.DESCRIPTION
+    FROM @NewlyAwardedIds N
+    INNER JOIN ACHIEVEMENT_MASTER AM ON AM.ACHIEVEMENTID = N.ACHIEVEMENTID
+    ORDER BY AM.DISPLAYORDER;
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[USP_GET_USER_ACHIEVEMENTS]
+(
+    @USERID INT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        AM.ACHIEVEMENTID,
+        AM.CODE,
+        AM.NAME,
+        AM.DESCRIPTION,
+        AM.TIER,
+        AM.CATEGORY,
+        AM.ICON,
+        AM.DISPLAYORDER,
+        CASE WHEN UA.USERACHIEVEMENTID IS NULL THEN 0 ELSE 1 END AS ISUNLOCKED,
+        UA.AWARDEDAT,
+        UA.CONTEXTJSON
+    FROM ACHIEVEMENT_MASTER AM
+    LEFT JOIN USER_ACHIEVEMENT UA
+        ON UA.ACHIEVEMENTID = AM.ACHIEVEMENTID
+       AND UA.USERID = @USERID
+    WHERE AM.ISACTIVE = 1
+    ORDER BY AM.DISPLAYORDER, AM.ACHIEVEMENTID;
+
+    SELECT 0 AS ErrorCode, N'SUCCESS' AS Status;
+END
+GO

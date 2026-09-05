@@ -380,29 +380,63 @@ const evaluateDay = async (req, res) => {
       );
     }
 
-    // 5) ACHIEVEMENT_UNLOCKED – reuse your checkMilestone helper
-    const milestoneInfo = checkMilestone(streakData.CurrentStreak);
-    if (milestoneInfo) {
-      await eventPublisher.publish(
-        EVENT_TYPES.ACHIEVEMENT_UNLOCKED,
-        EVENT_CATEGORIES.ACHIEVEMENT,
+    // 5) ACHIEVEMENT_UNLOCKED – award via USP_AWARD_ACHIEVEMENTS
+    let awardedAchievements = [];
+    try {
+      const awardResult = await sequelize.query(
+        `EXEC USP_AWARD_ACHIEVEMENTS
+            @USERID = :userId,
+            @TRIGGER = :trigger`,
         {
-          userId: evaluationData.UserId,
-          achievementType: "STREAK_MILESTONE",
-          achievementName: milestoneInfo.label,
-          streakDays: milestoneInfo.milestone,
-          unlockedAt: evaluationData.EvaluatedAt,
+          replacements: {
+            userId: parseInt(userId),
+            trigger: "EVALUATION",
+          },
+          type: QueryTypes.RAW,
         },
-        {
-          entityType: "ACHIEVEMENT",
-          entityId: `${evaluationData.UserId}-${milestoneInfo.milestone}`,
-        },
+      );
+
+      awardedAchievements = (awardResult[0] || []).filter(
+        (r) => r.ACHIEVEMENTID != null || r.AchievementId != null || r.CODE != null || r.Code != null,
+      );
+
+      for (const ach of awardedAchievements) {
+        const code = ach.CODE || ach.Code;
+        const name = ach.NAME || ach.Name;
+        const tier = ach.TIER || ach.Tier;
+        const category = ach.CATEGORY || ach.Category;
+        const achievementId = ach.ACHIEVEMENTID || ach.AchievementId;
+
+        await eventPublisher.publish(
+          EVENT_TYPES.ACHIEVEMENT_UNLOCKED,
+          EVENT_CATEGORIES.ACHIEVEMENT,
+          {
+            userId: evaluationData.UserId,
+            achievementId,
+            achievementCode: code,
+            achievementType: category,
+            achievementName: name,
+            tier,
+            streakDays: streakData.CurrentStreak,
+            unlockedAt: evaluationData.EvaluatedAt,
+          },
+          {
+            entityType: "ACHIEVEMENT",
+            entityId: `${evaluationData.UserId}-${code || achievementId}`,
+          },
+        );
+      }
+    } catch (awardError) {
+      console.error(
+        `[Rule Engine] Failed to award achievements:`,
+        awardError.message,
       );
     }
 
     //=================================================
     // BUILD RESPONSE
     //=================================================
+    const streakMilestone = checkMilestone(streakData.CurrentStreak);
     const responseData = {
       evaluationId: evaluationData.EvaluationId,
       dayId: evaluationData.DayId,
@@ -428,7 +462,16 @@ const evaluateDay = async (req, res) => {
         longestStreak: streakData.LongestStreak,
         isNewRecord: Boolean(streakData.IsNewRecord),
         consecutiveFailures: streakData.ConsecutiveFailures,
-        milestoneReached: checkMilestone(streakData.CurrentStreak),
+        milestoneReached: streakMilestone,
+      },
+      achievements: {
+        newlyAwarded: awardedAchievements.map((ach) => ({
+          achievementId: ach.ACHIEVEMENTID || ach.AchievementId,
+          code: ach.CODE || ach.Code,
+          name: ach.NAME || ach.Name,
+          tier: ach.TIER || ach.Tier,
+          category: ach.CATEGORY || ach.Category,
+        })),
       },
       analytics: {
         totalDays: analyticsData.TotalDays,
@@ -554,7 +597,7 @@ async function sendVerdictNotification(
   );
   const url = baseUrl
     ? `${baseUrl}/internal/send`
-    : "http://localhost:5005/internal/send";
+    : "http://localhost:6010/internal/send";
 
   await axios.post(
     url,
@@ -599,14 +642,127 @@ async function notifySchedulerForModeChange(
       reason,
       effectiveDate: nextDate.toISOString().split("T")[0],
       modeChangeId,
-      minimumRuleIds: newMode === "MINIMUM" ? [1, 4] : null, // Sleep + Reflection for minimum
+      // Deliberately null. The authoritative recovery rules live in
+      // RULE_MANAGEMENT.MINIMUM_RULE and are resolved at day creation by
+      // transformRulesForDaily(). This used to send a hard-coded [1, 4]
+      // ("Sleep + Reflection"), which ignored the user's actual selection and
+      // wrote misleading data into PENDING_MODE_CHANGES.MINIMUMRULEIDS.
+      minimumRuleIds: null,
     },
     {
       headers: {
         "X-Service-Key": process.env.INTERNAL_SERVICE_KEY,
       },
+      timeout: 8000,
     },
   );
 }
 
-module.exports = { evaluateDay };
+/**
+ * POST /internal/achievements/award
+ * Body: { userId, trigger: 'EVALUATION' | 'CHALLENGE_COMPLETE', context?: { durationDays, challengeLevel } }
+ */
+async function awardAchievements(req, res) {
+  try {
+    const { userId, trigger, context } = req.body || {};
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: { code: "MISSING_USER_ID", message: "userId is required" },
+      });
+    }
+
+    const awardTrigger = (trigger || "EVALUATION").toUpperCase();
+    if (!["EVALUATION", "CHALLENGE_COMPLETE"].includes(awardTrigger)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: "INVALID_TRIGGER",
+          message: "trigger must be EVALUATION or CHALLENGE_COMPLETE",
+        },
+      });
+    }
+
+    const contextJson =
+      context != null ? JSON.stringify(context) : null;
+
+    const result = await sequelize.query(
+      `EXEC USP_AWARD_ACHIEVEMENTS
+          @USERID = :userId,
+          @TRIGGER = :trigger,
+          @CONTEXTJSON = :contextJson`,
+      {
+        replacements: {
+          userId: parseInt(userId, 10),
+          trigger: awardTrigger,
+          contextJson,
+        },
+        type: QueryTypes.RAW,
+      },
+    );
+
+    const awarded = (result[0] || []).filter(
+      (r) => r.ACHIEVEMENTID != null || r.AchievementId != null || r.CODE != null || r.Code != null,
+    );
+
+    const mapped = awarded.map((ach) => ({
+      achievementId: ach.ACHIEVEMENTID || ach.AchievementId,
+      code: ach.CODE || ach.Code,
+      name: ach.NAME || ach.Name,
+      tier: ach.TIER || ach.Tier,
+      category: ach.CATEGORY || ach.Category,
+    }));
+
+    for (const ach of mapped) {
+      try {
+        await eventPublisher.publish(
+          EVENT_TYPES.ACHIEVEMENT_UNLOCKED,
+          EVENT_CATEGORIES.ACHIEVEMENT,
+          {
+            userId: parseInt(userId, 10),
+            achievementId: ach.achievementId,
+            achievementCode: ach.code,
+            achievementType: ach.category,
+            achievementName: ach.name,
+            tier: ach.tier,
+            unlockedAt: new Date().toISOString(),
+            trigger: awardTrigger,
+            context: context || null,
+          },
+          {
+            entityType: "ACHIEVEMENT",
+            entityId: `${userId}-${ach.code || ach.achievementId}`,
+          },
+        );
+      } catch (publishError) {
+        console.error(
+          `[Rule Engine] Failed to publish ACHIEVEMENT_UNLOCKED for ${ach.code}:`,
+          publishError.message,
+        );
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        userId: parseInt(userId, 10),
+        trigger: awardTrigger,
+        newlyAwarded: mapped,
+      },
+    });
+  } catch (error) {
+    console.error("[Rule Engine] Error awarding achievements:", error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "Failed to award achievements",
+        details:
+          process.env.NODE_ENV === "development" ? error.message : undefined,
+      },
+    });
+  }
+}
+
+module.exports = { evaluateDay, awardAchievements };

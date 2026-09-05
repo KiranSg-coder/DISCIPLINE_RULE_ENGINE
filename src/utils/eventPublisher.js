@@ -2,7 +2,7 @@ const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
 const { EVENT_TYPES, EVENT_CATEGORIES } = require("../config/eventTypes");
 
-const EVENT_BUS_URL = (process.env.EVENT_BUS_URL || "http://localhost:5006").replace(/\/$/, "");
+const EVENT_BUS_URL = (process.env.EVENT_BUS_URL || "http://localhost:6007").replace(/\/$/, "");
 const SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY;
 
 class EventPublisher {

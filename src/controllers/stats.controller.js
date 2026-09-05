@@ -1,6 +1,95 @@
 const { QueryTypes } = require("sequelize");
 const sequelize = require("../config/database");
 
+/** Empty streak is a valid state — never 404 the Settings/Statistics UI. */
+function emptyStreakData(userId) {
+  return {
+    userId: Number(userId) || userId,
+    currentStreak: 0,
+    longestStreak: 0,
+    longestStreakPeriod: { startDate: null, endDate: null, days: 0 },
+    consecutiveFailures: 0,
+    lastPassDate: null,
+    lastFailDate: null,
+    milestones: { next: null, achieved: [] },
+    recentStreaks: [],
+    totalStats: {
+      totalDays: 0,
+      totalPasses: 0,
+      totalFails: 0,
+      successRate: 0,
+    },
+  };
+}
+
+function emptyWeekData(userId, startDate) {
+  return {
+    userId: Number(userId) || userId,
+    weekStartDate: startDate,
+    weekEndDate: null,
+    summary: {
+      totalDays: 0,
+      passedDays: 0,
+      failedDays: 0,
+      successRate: 0,
+      currentStreak: 0,
+    },
+    dailyBreakdown: [],
+    domainPerformance: [],
+    mostMissedRule: null,
+    alwaysCompletedRule: null,
+    pattern: "",
+    insights: [],
+  };
+}
+
+function emptyOverallData(userId) {
+  return {
+    userId: Number(userId) || userId,
+    period: { startDate: null, endDate: null, totalDays: 0 },
+    overallPerformance: {
+      totalDays: 0,
+      passedDays: 0,
+      failedDays: 0,
+      successRate: 0,
+      averageCompletionRate: 0,
+    },
+    streakSummary: {
+      currentStreak: 0,
+      longestStreak: 0,
+      averageStreakLength: 0,
+    },
+    modeDistribution: {
+      standard: { days: 0, passes: 0, fails: 0, successRate: 0 },
+      minimum: { days: 0, passes: 0, fails: 0, successRate: 0 },
+    },
+    domainPerformance: [],
+    trends: {
+      last7Days: { successRate: 0, trend: "stable", change: 0 },
+      last30Days: { successRate: 0, trend: "stable", change: 0 },
+    },
+    achievements: [],
+  };
+}
+
+function emptyModeHistoryData(userId) {
+  return {
+    userId: Number(userId) || userId,
+    currentStatus: {
+      currentMode: "STANDARD",
+      currentStreak: 0,
+      consecutiveFailures: 0,
+      lastModeChangeDate: null,
+      readyForRecovery: false,
+      inMinimumModeThreshold: false,
+    },
+    modeHistory: [],
+    statistics: {},
+    periods: [],
+    insights: [],
+  };
+}
+
 const getWeekStats = async (req, res) => {
   try {
     const userId = req.userId;
@@ -64,12 +153,9 @@ const getWeekStats = async (req, res) => {
     const rows = result[0] || [];
 
     if (!rows.length) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: "NO_DATA",
-          message: `No data found for user ${userId} in week starting ${startDate}`,
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyWeekData(userId, startDate),
       });
     }
 
@@ -93,25 +179,16 @@ const getWeekStats = async (req, res) => {
     // CHECK FOR ERRORS
     //=================================================
     if (summaryData && summaryData.ErrorCode) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: summaryData.ErrorType || "USER_NOT_FOUND",
-          message: summaryData.ErrorMessage,
-          details: {
-            userId: summaryData.UserId,
-          },
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyWeekData(userId, startDate),
       });
     }
 
     if (!summaryData) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: "NO_DATA",
-          message: `No data found for user ${userId} in week starting ${startDate}`,
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyWeekData(userId, startDate),
       });
     }
 
@@ -361,12 +438,9 @@ const getStreakStats = async (req, res) => {
     const rows = result[0] || [];
 
     if (!rows.length) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: "NO_DATA",
-          message: `No streak data found for user ${userId}`,
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyStreakData(userId),
       });
     }
 
@@ -387,25 +461,16 @@ const getStreakStats = async (req, res) => {
     // CHECK FOR ERRORS
     //=================================================
     if (summaryData && summaryData.ErrorCode) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: summaryData.ErrorType || "USER_NOT_FOUND",
-          message: summaryData.ErrorMessage,
-          details: {
-            userId: summaryData.UserId,
-          },
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyStreakData(userId),
       });
     }
 
     if (!summaryData) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: "NO_DATA",
-          message: `No streak data found for user ${userId}`,
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyStreakData(userId),
       });
     }
 
@@ -523,12 +588,9 @@ const getOverallStats = async (req, res) => {
     const rows = result[0] || [];
 
     if (!rows.length) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: "NO_DATA",
-          message: `No data found for user ${userId}`,
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyOverallData(userId),
       });
     }
 
@@ -577,25 +639,16 @@ const getOverallStats = async (req, res) => {
     // CHECK FOR ERRORS
     //=================================================
     if (periodData && periodData.ErrorCode) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: periodData.ErrorType || "USER_NOT_FOUND",
-          message: periodData.ErrorMessage,
-          details: {
-            userId: periodData.UserId,
-          },
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyOverallData(userId),
       });
     }
 
     if (!periodData || !performanceData) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: "NO_DATA",
-          message: `No data found for user ${userId}`,
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyOverallData(userId),
       });
     }
 
@@ -766,12 +819,9 @@ const getModeHistory = async (req, res) => {
     const rows = result[0] || [];
 
     if (!rows.length) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: "NO_DATA",
-          message: `No data found for user ${userId}`,
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyModeHistoryData(userId),
       });
     }
 
@@ -795,25 +845,16 @@ const getModeHistory = async (req, res) => {
     // CHECK FOR ERRORS
     //=================================================
     if (currentStatus && currentStatus.ErrorCode) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: currentStatus.ErrorType || "USER_NOT_FOUND",
-          message: currentStatus.ErrorMessage,
-          details: {
-            userId: currentStatus.UserId,
-          },
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyModeHistoryData(userId),
       });
     }
 
     if (!currentStatus) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: "NO_DATA",
-          message: `No data found for user ${userId}`,
-        },
+      return res.status(200).json({
+        success: true,
+        data: emptyModeHistoryData(userId),
       });
     }
 
@@ -995,9 +1036,75 @@ function generateModeInsights(currentStatus, modeHistory, statistics) {
   return insights;
 }
 
+/**
+ * GET /internal/stats/achievements
+ * Returns achievement master list with IsUnlocked for the current user.
+ */
+const getAchievements = async (req, res) => {
+  try {
+    const userId = req.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: { code: "UNAUTHORIZED", message: "Missing user context" },
+      });
+    }
+
+    console.log(`[Rule Engine] Fetching achievements for user ${userId}`);
+
+    const result = await sequelize.query(
+      `EXEC USP_GET_USER_ACHIEVEMENTS @USERID = :userId`,
+      {
+        replacements: { userId },
+        type: QueryTypes.RAW,
+      },
+    );
+
+    const rows = result[0] || [];
+
+    const achievements = rows.map((r) => ({
+      achievementId: r.AchievementId ?? r.ACHIEVEMENTID,
+      code: r.Code ?? r.CODE,
+      name: r.Name ?? r.NAME,
+      description: r.Description ?? r.DESCRIPTION,
+      tier: r.Tier ?? r.TIER,
+      category: r.Category ?? r.CATEGORY,
+      icon: r.Icon ?? r.ICON,
+      displayOrder: r.DisplayOrder ?? r.DISPLAYORDER,
+      criteriaJson: r.CriteriaJson ?? r.CRITERIAJSON,
+      isUnlocked: Boolean(r.IsUnlocked ?? r.ISUNLOCKED),
+      awardedAt: r.AwardedAt ?? r.AWARDEDAT ?? null,
+      contextJson: r.ContextJson ?? r.CONTEXTJSON ?? null,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        userId,
+        total: achievements.length,
+        unlockedCount: achievements.filter((a) => a.isUnlocked).length,
+        achievements,
+      },
+    });
+  } catch (error) {
+    console.error("[Rule Engine] Error fetching achievements:", error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "Failed to fetch achievements",
+        details:
+          process.env.NODE_ENV === "development" ? error.message : undefined,
+      },
+    });
+  }
+};
+
 module.exports = {
   getWeekStats,
   getStreakStats,
   getOverallStats,
   getModeHistory,
+  getAchievements,
 };
